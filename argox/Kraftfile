@@ -1,0 +1,14 @@
+spec: v0.7
+
+name: myapp
+
+runtime: base-compat:latest
+
+rootfs:
+  source:
+    type: dockerfile
+    path: .
+    dockerfile: ./Dockerfile
+  format: erofs
+
+cmd: ["/usr/local/bin/python3", "/tmp/app.py"]
