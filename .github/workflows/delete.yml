@@ -1,0 +1,393 @@
+name: Delete Unikraft Applications
+
+on:
+  workflow_dispatch:
+    inputs:
+      TOKEN:
+        description: "Unikraft API-Key(留空可使用secrets中填写的token)"
+        required: true
+        type: string
+
+      delete_mode:
+        description: "选择删除方式"
+        required: true
+        type: choice
+        options:
+          - "specified - 指定应用"
+          - "all - 全部应用"
+        default: "specified - 指定应用"
+
+      app_name:
+        description: "指定应用名称（仅指定应用模式填写）"
+        required: false
+        type: string
+        default: ""
+
+      confirm:
+        description: "确认删除应用及对应存储卷和镜像"
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  delete:
+    name: Delete Unikraft Applications
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: Check Parameters
+        env:
+          TOKEN: ${{ inputs.TOKEN }}
+          DELETE_MODE: ${{ inputs.delete_mode }}
+          APP_NAME: ${{ inputs.app_name }}
+          CONFIRM: ${{ inputs.confirm }}
+        shell: bash
+        run: |
+
+          echo "========================================"
+          echo "Delete Mode: $DELETE_MODE"
+          if [ "$DELETE_MODE" = "specified - 指定应用" ]; then
+            echo "Application: $APP_NAME"
+          else
+            echo "Application: ALL"
+          fi
+          echo "========================================"
+
+          if [ -z "$TOKEN" ]; then
+            echo "❌ TOKEN 不能为空"
+            exit 1
+          fi
+
+          if [ "$CONFIRM" != "true" ]; then
+            echo "❌ 请勾选确认删除"
+            exit 1
+          fi
+
+          if [ "$DELETE_MODE" = "specified - 指定应用" ] && [ -z "$APP_NAME" ]; then
+            echo "❌ 指定应用模式必须填写应用名称"
+            exit 1
+          fi
+
+      - name: Install Dependencies
+        shell: bash
+        run: |
+
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl jq
+
+          echo "✅ Dependencies installed"
+
+      - name: Install Unikraft CLI
+        shell: bash
+        run: |
+
+          curl --proto '=https' --tlsv1.2 -fsSL https://unikraft.com/cli/install.sh | sh
+          export PATH="/root/.local/bin:$PATH"
+
+          if ! command -v unikraft &> /dev/null; then
+            echo "❌ Unikraft CLI installation failed"
+            exit 1
+          fi
+          echo ""
+          echo "✅ Unikraft CLI installed"
+
+      - name: Login To Unikraft
+        env:
+          UNIKRAFT_TOKEN: ${{ inputs.TOKEN }}
+        shell: bash
+        run: |
+
+          echo "========================================"
+          echo "🔐 LOGIN TO UNIKRAFT"
+          echo "========================================"
+
+          if LOGIN_OUTPUT="$(printf '%s\n' "$UNIKRAFT_TOKEN" | unikraft login --token - 2>&1)"; then
+            LOGIN_STATUS=0
+          else
+            LOGIN_STATUS=$?
+          fi
+
+          echo "$LOGIN_OUTPUT"
+
+          if [ "$LOGIN_STATUS" -ne 0 ]; then
+            echo "❌ Login failed"
+            exit "$LOGIN_STATUS"
+          fi
+
+          # 获取 Org
+          ORG_NAME="$(echo "$LOGIN_OUTPUT" | \
+            sed -n 's/.*authenticated organization=\([^[:space:]]*\).*/\1/p' | \
+            head -n 1)"
+
+          if [ -z "$ORG_NAME" ]; then
+            echo ""
+            echo "❌ Failed to get authenticated organization"
+            echo ""
+            echo "Login output:"
+            echo "$LOGIN_OUTPUT"
+            exit 1
+          fi
+
+          echo "ORG_NAME=$ORG_NAME" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "🏢 Org: $ORG_NAME"
+          echo "✅ Login successful"
+
+      - name: Get All Applications
+        shell: bash
+        run: |
+
+          echo "========================================"
+          echo "🚀 GET ALL APPLICATIONS"
+          echo "========================================"
+
+          INSTANCE_JSON="$(unikraft instances list -o json)"
+
+          echo "$INSTANCE_JSON" | jq .
+
+          APPLICATIONS="$(
+            printf '%s\n' "$INSTANCE_JSON" |
+            jq -r '.[].name // empty' |
+            sort -u
+          )"
+
+          echo ""
+          echo "Current Applications:"
+
+          if [ -n "$APPLICATIONS" ]; then
+            printf '%s\n' "$APPLICATIONS"
+          else
+            echo "None"
+          fi
+
+          {
+            echo "APPLICATIONS<<EOF"
+            echo "$APPLICATIONS"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Delete Specified Application
+        if: ${{ inputs.delete_mode == 'specified - 指定应用' }}
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          APPLICATIONS: ${{ env.APPLICATIONS }}
+        shell: bash
+        run: |
+
+          echo "========================================"
+          echo "🚀 DELETE SPECIFIED APPLICATION"
+          echo "========================================"
+
+          echo "Target Application: $APP_NAME"
+
+          APP_FOUND=false
+
+          while IFS= read -r CURRENT_APP; do
+            [ -z "$CURRENT_APP" ] && continue
+
+            if [ "$CURRENT_APP" = "$APP_NAME" ]; then
+              APP_FOUND=true
+              break
+            fi
+          done <<< "$APPLICATIONS"
+
+          if [ "$APP_FOUND" != "true" ]; then
+            echo ""
+            echo "❌ Application not found: $APP_NAME"
+            echo ""
+            echo "Current Applications:"
+
+            if [ -n "$APPLICATIONS" ]; then
+              printf '%s\n' "$APPLICATIONS"
+            else
+              echo "None"
+            fi
+
+            exit 1
+          fi
+
+          echo "✅ Application found: $APP_NAME"
+
+          echo ""
+          echo "========================================"
+          echo "💾 GET ATTACHED VOLUMES"
+          echo "========================================"
+
+          APP_INFO="$(
+            unikraft instances get "$APP_NAME" -f volumes -o json
+          )"
+
+          echo "$APP_INFO" | jq .
+
+          VOLUMES="$(
+            printf '%s\n' "$APP_INFO" |
+            jq -r '.[].volumes[]?.name' |
+            sort -u
+          )"
+
+          echo ""
+          echo "Attached Volumes:"
+
+          if [ -n "$VOLUMES" ]; then
+            printf '%s\n' "$VOLUMES"
+          else
+            echo "None"
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "🗑️ DELETE APPLICATION"
+          echo "========================================"
+
+          unikraft instances delete "$APP_NAME" --force --timeout=5m
+
+          echo "✅ Application delete command completed"
+
+          if [ -n "$VOLUMES" ]; then
+            echo ""
+            echo "========================================"
+            echo "💾 DELETE ATTACHED VOLUMES"
+            echo "========================================"
+
+            while IFS= read -r VOLUME_NAME; do
+              [ -z "$VOLUME_NAME" ] && continue
+
+              echo ""
+              echo "🗑️ Deleting Volume: $VOLUME_NAME"
+
+              unikraft volumes delete "$VOLUME_NAME" --timeout=5m
+
+              echo "✅ Volume delete command completed: $VOLUME_NAME"
+            done <<< "$VOLUMES"
+          else
+            echo ""
+            echo "ℹ️ 该应用没有挂载 Volume"
+          fi
+
+          # 删除对应镜像
+          echo "🗑️ Deleting Images"
+          unikraft images delete "$ORG_NAME/$APP_NAME" --timeout=5m
+
+          echo ""
+          echo "========================================"
+          echo "🎉 SPECIFIED CLEANUP DONE"
+          echo "========================================"
+
+      - name: Delete All Applications And Volumes
+        if: ${{ inputs.delete_mode == 'all - 全部应用' }}
+        env:
+          APPLICATIONS: ${{ env.APPLICATIONS }}
+        shell: bash
+        run: |
+
+          echo "========================================"
+          echo "🚀 DELETE ALL APPLICATIONS"
+          echo "========================================"
+
+          if [ -n "$APPLICATIONS" ]; then
+            echo "Applications to delete:"
+            printf '%s\n' "$APPLICATIONS"
+
+            while IFS= read -r APP_NAME; do
+              [ -z "$APP_NAME" ] && continue
+
+              echo ""
+              echo "🗑️ Deleting Application: $APP_NAME"
+
+              unikraft instances delete "$APP_NAME" --force --timeout=5m
+
+              echo "🗑️ Deleting Images"
+              unikraft images delete "$ORG_NAME/$APP_NAME" --timeout=5m
+
+              echo "✅ Application delete command completed: $APP_NAME"
+            done <<< "$APPLICATIONS"
+          else
+            echo "ℹ️ 当前没有任何 Application"
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "💾 GET ALL VOLUMES"
+          echo "========================================"
+
+          VOLUME_JSON="$(unikraft volumes list -o json)"
+
+          echo "$VOLUME_JSON" | jq .
+
+          ALL_VOLUMES="$(
+            printf '%s\n' "$VOLUME_JSON" |
+            jq -r '.[].name // empty' |
+            sort -u
+          )"
+
+          echo ""
+          echo "Volumes to delete:"
+
+          if [ -n "$ALL_VOLUMES" ]; then
+            printf '%s\n' "$ALL_VOLUMES"
+
+            while IFS= read -r VOLUME_NAME; do
+              [ -z "$VOLUME_NAME" ] && continue
+
+              echo ""
+              echo "🗑️ Deleting Volume: $VOLUME_NAME"
+
+              unikraft volumes delete "$VOLUME_NAME" --timeout=5m
+
+              echo "✅ Volume delete command completed: $VOLUME_NAME"
+            done <<< "$ALL_VOLUMES"
+          else
+            echo "None"
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "🎉 ALL APPLICATIONS AND VOLUMES DELETED"
+          echo "========================================"
+
+      - name: Final Resource Check
+        if: always()
+        shell: bash
+        run: |
+          echo ""
+          echo "========================================"
+          echo "🚀 FINAL APPLICATIONS"
+          echo "========================================"
+
+          unikraft instances list || true
+
+          echo ""
+          echo "========================================"
+          echo "💾 FINAL VOLUMES"
+          echo "========================================"
+
+          unikraft volumes list || true
+
+      - name: Logout
+        if: always()
+        shell: bash
+        run: |
+          unikraft logout 2>/dev/null || true
+          echo "🔐 Logged out"
+
+      - name: Clean old workflow runs
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
+          count=0
+          for run_id in $runs; do
+            count=$((count + 1))
+            if [ $count -gt 1 ]; then
+              echo "delete: $run_id"
+              gh run delete $run_id || true
+            fi
+          done
+          echo ""
+          echo "✅ Old workflow runs cleaned"
