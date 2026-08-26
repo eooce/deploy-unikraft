@@ -1,0 +1,359 @@
+name: Deploy argox to Unikraft
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      TOKEN:
+        description: 'TOKEN(Unikraft API Key,可留空使用Secrets中设置的TOKEN)'
+        required: false
+        default: ''
+        type: string
+
+      metro:
+        description: '选择 Unikraft 部署地区'
+        required: true
+        type: choice
+        default: 'sin - 新加坡'
+        options:
+          - 'dal - 美国达拉斯'
+          - 'fra - 德国法兰克福'
+          - 'sfo - 美国旧金山'
+          - 'sin - 新加坡'
+          - 'was - 美国华盛顿特区'
+
+jobs:
+
+  deploy:
+    name: Deploy argox
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+
+    steps:
+      # 1. Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # 2. 设置部署地区 + TOKEN
+      - name: Set Deployment Metro and Token
+        shell: bash
+        env:
+          INPUT_TOKEN: ${{ inputs.TOKEN }}
+          SECRET_TOKEN: ${{ secrets.TOKEN }}
+        run: |
+
+          echo "==================================="
+          echo "🌍 Setting Deployment Region"
+          echo "==================================="
+
+          METRO_INPUT="${{ inputs.metro }}"
+          METRO_CODE="${METRO_INPUT%% *}"
+          echo "METRO_CODE=$METRO_CODE" >> "$GITHUB_ENV"
+          
+          if [ -n "$INPUT_TOKEN" ]; then
+            API_KEY="$INPUT_TOKEN"
+            echo "🔑 TOKEN source: Workflow Input"
+          elif [ -n "$SECRET_TOKEN" ]; then
+            API_KEY="$SECRET_TOKEN"
+            echo "🔑 TOKEN source: Repository Secret"
+          else
+            echo ""
+            echo "❌ TOKEN is not set."
+            echo ""
+            echo "请在以下任意位置设置 TOKEN："
+            echo ""
+            echo "方法 1:"
+            echo "Workflow → Run workflow → TOKEN"
+            echo ""
+            echo "方法 2:"
+            echo "Settings → Secrets and variables → Actions"
+            echo "创建 Repository secret: TOKEN"
+            exit 1
+          fi
+
+          echo "API_KEY=$API_KEY" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "🔑 TOKEN: configured"
+          echo "🌍 Deployment Region: $METRO_CODE"
+          echo "==================================="
+          echo "✅ Configuration completed"
+          echo "==================================="
+
+      # 3. 安装依赖
+      - name: Install dependencies
+        shell: bash
+        run: |
+
+          echo "==================================="
+          echo "📦 Installing dependencies"
+          echo "==================================="
+
+          sudo apt update
+          sudo apt install -y \
+            ca-certificates \
+            curl \
+            gnupg
+
+          echo ""
+          echo "✅ Dependencies installed"
+
+      # 4. 安装 Unikraft CLI
+      - name: Install Unikraft CLI
+        shell: bash
+        run: |
+
+          echo "==================================="
+          echo "📦 Installing Unikraft CLI"
+          echo "==================================="
+
+          curl --proto '=https' --tlsv1.2 -fsSL https://unikraft.com/cli/install.sh | sh
+          export PATH="/root/.local/bin:$PATH"
+
+          if ! command -v unikraft &> /dev/null; then
+            echo "❌ Unikraft CLI installation failed"
+            exit 1
+          fi
+
+          echo ""
+          echo "==================================="
+          echo "✅ Unikraft CLI installed"
+          echo "==================================="
+
+          unikraft version
+
+      # 5. 登录 Unikraft
+      - name: Login to Unikraft
+        shell: bash
+        run: |
+
+          echo "==================================="
+          echo "🔐 Login to Unikraft"
+          echo "==================================="
+
+          if LOGIN_OUTPUT="$(printf '%s\n' "$API_KEY" | unikraft login --token - 2>&1)"; then
+            LOGIN_STATUS=0
+          else
+            LOGIN_STATUS=$?
+          fi
+
+          echo "$LOGIN_OUTPUT"
+
+          if [ "$LOGIN_STATUS" -ne 0 ]; then
+            echo ""
+            echo "❌ Login failed"
+            exit "$LOGIN_STATUS"
+          fi
+
+          # 获取 Org
+          ORG_NAME="$(echo "$LOGIN_OUTPUT" | \
+            sed -n 's/.*authenticated organization=\([^[:space:]]*\).*/\1/p' | \
+            head -n 1)"
+
+          if [ -z "$ORG_NAME" ]; then
+            echo ""
+            echo "❌ Failed to get authenticated organization"
+            echo ""
+            echo "Login output:"
+            echo "$LOGIN_OUTPUT"
+            exit 1
+          fi
+
+          echo "ORG_NAME=$ORG_NAME" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "==================================="
+          echo "✅ Login successful"
+          echo "==================================="
+          echo "🏢 Organization: $ORG_NAME"
+
+      # 6. 生成随机资源名称
+      - name: Generate random resource names
+        shell: bash
+        run: |
+
+          # 避免 tr/head 在 GitHub Actions 中因为 pipefail 出现 broken pipe
+          set +o pipefail
+
+          APP_NAME="$(tr -dc 'a-z' < /dev/urandom | head -c 8)"
+          set -o pipefail
+
+          # Image:
+          IMAGE="$ORG_NAME/$APP_NAME:latest"
+
+          # 保存到后续 Steps
+          echo "VOLUME_NAME=$APP_NAME" >> "$GITHUB_ENV"
+          echo "APP_NAME=$APP_NAME" >> "$GITHUB_ENV"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "==================================="
+          echo "🎲 Generated Resources"
+          echo "==================================="
+          echo "🏢 Org       : $ORG_NAME"
+          echo "🌍 Metro     : $METRO_CODE"
+          echo "💾 Volume    : $APP_NAME"
+          echo "📦 Image     : $IMAGE"
+          echo "🚀 App-name  : $APP_NAME"
+          echo "==================================="
+
+      # 7. 创建 Volume
+      - name: Create Unikraft Volume
+        shell: bash
+        run: |
+
+          echo "==================================="
+          echo "💾 Creating Volume"
+          echo "==================================="
+
+          unikraft volumes create \
+            --name "$VOLUME_NAME" \
+            --size 512MiB \
+            --metro "$METRO_CODE"
+
+          echo ""
+          echo "==================================="
+          echo "✅ Volume created"
+          echo "==================================="
+          echo "💾 Volume: $VOLUME_NAME"
+          echo "🌍 Metro : $METRO_CODE"
+
+      # 8. 构建 Unikraft Image
+      - name: Build Unikraft Image
+        shell: bash
+        working-directory: ./argox
+        run: |
+          set -e
+
+          echo "==================================="
+          echo "🔨 Building Unikraft Image"
+          echo "==================================="
+          echo ""
+          unikraft images build . \
+            --output "$IMAGE"
+
+          echo ""
+          echo "==================================="
+          echo "✅ Image build completed"
+          echo "==================================="
+          echo "📦 Image: $IMAGE"
+          sleep 10
+          
+      # 9. 部署 Application
+      - name: Deploy Unikraft Application
+        shell: bash
+        run: |
+
+          echo "==================================="
+          echo "🚀 Deploying Application"
+          echo "==================================="
+
+          echo ""
+          echo "🏢 Org       : $ORG_NAME"
+          echo "🌍 Metro     : $METRO_CODE"
+          echo "📦 Image     : $IMAGE"
+          echo "🚀 App-name  : $APP_NAME"
+          echo "💾 Volume    : $VOLUME_NAME"
+          echo ""
+
+          # unikraft run
+          if RUN_OUTPUT="$(unikraft run \
+            --metro "$METRO_CODE" \
+            --image "$IMAGE" \
+            -n "$APP_NAME" \
+            -p 443:3000/http+tls \
+            -m 512MiB \
+            -v "$VOLUME_NAME:/data" \
+            --autostart 2>&1)"; then
+            RUN_STATUS=0
+          else
+            RUN_STATUS=$?
+          fi
+          echo "$RUN_OUTPUT"
+
+          # 判断部署结果
+          if [ "$RUN_STATUS" -ne 0 ]; then
+
+            echo ""
+            echo "==================================="
+            echo "❌ Deployment failed"
+            echo "==================================="
+            exit "$RUN_STATUS"
+
+          fi
+
+          # 获取 unikraft.app 域名
+          APP_DOMAIN="$(printf '%s\n' "$RUN_OUTPUT" | \
+            grep -Eo '[a-zA-Z0-9.-]+\.unikraft\.app' | \
+            head -n 1 || true)"
+
+
+          if [ -n "$APP_DOMAIN" ]; then
+            APP_URL="https://$APP_DOMAIN"
+            echo "APP_URL=$APP_URL" >> "$GITHUB_ENV"
+          else
+            APP_URL=""
+          fi
+
+          echo ""
+          echo "==================================="
+          echo "🎉 Deployment Completed"
+          echo "==================================="
+
+          if [ -n "$APP_URL" ]; then
+            echo "🔗 App URL:"
+            echo "$APP_URL"
+          else
+            echo "⚠️ Deployment succeeded"
+            echo "⚠️ No unikraft.app URL found in output"
+          fi
+
+      # 10. 显示最终部署信息
+      - name: Get Application Information
+        if: success()
+        shell: bash
+        run: |
+
+          echo ""
+          echo ""
+          echo "==================================="
+          echo "✅ Deployment finished successfully"
+          echo "🎉 Unikraft Application Information"
+          echo "==================================="
+          echo ""
+          echo "🏢 Organization : $ORG_NAME"
+          echo "🌍 Metro        : $METRO_CODE"
+          echo "💾 Volume       : $VOLUME_NAME"
+          echo "📦 Image        : $IMAGE"
+          echo "🚀 App Name     : $APP_NAME"
+          echo ""
+
+          if [ -n "${APP_URL:-}" ]; then
+            echo ""
+            echo "🔗 App URL: $APP_URL"
+          else
+            echo "❌ Application URL Unavailable"
+          fi
+          
+          # 退出
+          unikraft logout >/dev/null 2>&1 || true
+
+      # 11. 清理工作流历史运行记录
+      - name: Clean old workflow runs
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
+          count=0
+          for run_id in $runs; do
+            count=$((count + 1))
+            if [ $count -gt 1 ]; then
+              echo "delete: $run_id"
+              gh run delete $run_id || true
+            fi
+          done
+          echo ""
+          echo "✅ Old workflow runs cleaned"
