@@ -35,7 +35,7 @@ export PATH="/root/.local/bin:$PATH"
 ```
 2. 登录,{API_KEY}替换为自己的
 ```
-eoho "{API_KEY}" | unikraft logn --token -
+eoho "{API_KEY}" | unikraft login --token -
 ```
 3. 创建存储盘
 ```
