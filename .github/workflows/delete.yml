@@ -5,7 +5,7 @@ on:
     inputs:
       TOKEN:
         description: "Unikraft API-Key(留空可使用secrets中填写的token)"
-        required: true
+        required: false
         type: string
 
       delete_mode:
@@ -311,7 +311,7 @@ jobs:
 
           echo ""
           echo "========================================"
-          echo "💾 GET ALL VOLUMES"
+          echo "💾 GET ALL VOLUMES AND DELETE"
           echo "========================================"
 
           VOLUME_JSON="$(unikraft volumes list -o json)"
@@ -341,8 +341,39 @@ jobs:
               echo "✅ Volume delete command completed: $VOLUME_NAME"
             done <<< "$ALL_VOLUMES"
           else
-            echo "None"
+            echo "当前没有 Volume 存储卷"
           fi
+
+          echo ""
+          echo "========================================"
+          echo "💾 GET ALL IMAGES AND DELETE"
+          echo "========================================"
+
+          # 获取镜像列表
+          images=$(unikraft images list 2>/dev/null | \
+              awk 'NR>1 {print $1}' | \
+              grep -E '^[a-zA-Z0-9._-]+/' | \
+              grep -v '/official/')
+
+          if [ -z "$images" ]; then
+              echo "当前没有镜像"
+              exit 0
+          fi
+
+          echo "Found images: "
+          echo "$images"
+          while IFS= read -r image; do
+              [ -z "$image" ] && continue
+
+              echo "Deleting image: $image"
+              unikraft images delete "$image"
+
+              if [ $? -eq 0 ]; then
+                  echo "✓ Delete success: $image"
+              else
+                  echo "✗ Delete failed: $image"
+              fi
+          done <<< "$images"
 
           echo ""
           echo "========================================"
