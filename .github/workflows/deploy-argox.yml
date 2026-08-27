@@ -22,6 +22,12 @@ on:
           - 'sin - 新加坡'
           - 'was - 美国华盛顿特区'
 
+      NAME:
+        description: '应用名称(建议留空使用随机名称)'
+        required: false
+        default: ''
+        type: string
+
 jobs:
 
   deploy:
@@ -172,13 +178,15 @@ jobs:
       # 6. 生成随机资源名称
       - name: Generate random resource names
         shell: bash
+        env:
+          APP_NAME: ${{ inputs.NAME }}
         run: |
 
-          # 避免 tr/head 在 GitHub Actions 中因为 pipefail 出现 broken pipe
-          set +o pipefail
-
-          APP_NAME="$(tr -dc 'a-z' < /dev/urandom | head -c 8)"
-          set -o pipefail
+          if [ -n "$APP_NAME" ]; then
+            APP_NAME=$APP_NAME
+          else
+            APP_NAME="$(tr -dc 'a-z' < /dev/urandom | head -c 8)"
+          fi
 
           # Image:
           IMAGE="$ORG_NAME/$APP_NAME:latest"
@@ -223,6 +231,8 @@ jobs:
       # 8. 构建 Unikraft Image
       - name: Build Unikraft Image
         shell: bash
+        env:
+          METRO: ${{ inputs.metro }}
         working-directory: ./argox
         run: |
           set -e
@@ -235,11 +245,19 @@ jobs:
             --output "$IMAGE"
 
           echo ""
+          echo "📦 Image: $IMAGE"
           echo "==================================="
           echo "✅ Image build completed"
           echo "==================================="
-          echo "📦 Image: $IMAGE"
-          sleep 10
+          
+          # 不同的地区需要等待更长的时间确保镜像推送到了unikraft.io
+          if [ "$METRO" = "dal - 美国达拉斯" ] || \
+            [ "$METRO" = "sfo - 美国旧金山" ] || \
+            [ "$METRO" = "was - 美国华盛顿特区" ]; then
+            sleep 20
+          else
+            sleep 5
+          fi
           
       # 9. 部署 Application
       - name: Deploy Unikraft Application
