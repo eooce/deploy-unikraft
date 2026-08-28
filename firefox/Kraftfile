@@ -1,0 +1,14 @@
+﻿spec: v0.7
+
+name: firefox
+
+runtime: base-compat:latest
+
+rootfs:
+  source:
+    type: dockerfile
+    path: .
+    dockerfile: ./Dockerfile
+  format: erofs
+
+cmd: ["sh", "-c", "/home/vncuser/start.sh & tail -f /dev/null"]
