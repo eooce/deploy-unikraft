@@ -10,5 +10,3 @@ rootfs:
     path: .
     dockerfile: ./Dockerfile
   format: erofs
-
-cmd: ["sh", "-c", "/home/vncuser/start.sh & tail -f /dev/null"]
