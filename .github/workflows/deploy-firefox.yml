@@ -295,10 +295,12 @@ jobs:
             --metro "$METRO_CODE" \
             --image "$IMAGE" \
             -n "$APP_NAME" \
-            -p 443:8080/http+tls \
+            -p 443:5800/http+tls \
             -m 3096MiB \
+            -e TZ=Asia/Shanghai \
+            -e LANG=zh_CN.UTF-8 \
             -e VNC_PASSWORD="$VNC_PASSWORD" \
-            -v "$VOLUME_NAME:/data" \
+            -v "$VOLUME_NAME:/config:rw" \
             --autostart 2>&1)"; then
             RUN_STATUS=0
           else
