@@ -300,7 +300,7 @@ jobs:
             -e TZ=Asia/Shanghai \
             -e LANG=zh_CN.UTF-8 \
             -e VNC_PASSWORD="$VNC_PASSWORD" \
-            -v "$VOLUME_NAME:/config:rw" \
+            -v "$VOLUME_NAME:/config" \
             --autostart 2>&1)"; then
             RUN_STATUS=0
           else
